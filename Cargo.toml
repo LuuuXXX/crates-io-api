@@ -1,0 +1,31 @@
+[package]
+authors = ["LuuuXXX"]
+name = "crates_io_api"
+description = "API client for the crates.io registry (sparse index implementation)"
+license = "MIT/Apache-2.0"
+repository = "https://github.com/LuuuXXX/crates-io-api"
+documentation = "https://docs.rs/crates_io_api"
+readme = "README.md"
+keywords = ["crates", "api"]
+categories = ["web-programming", "web-programming::http-client"]
+edition = "2021"
+version = "0.8.1"
+
+[dependencies]
+chrono = { version = "0.4.20", default-features = false, features = ["serde"] }
+reqwest = { version = "0.11", default-features = false, features = ["blocking"] }
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+url = "2.1"
+log = "0.4"
+futures = "0.3"
+tokio = { version = "1", default-features = false, features = ["sync", "time"] }
+semver = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[features]
+default = ["reqwest/default-tls"]
+rustls = ["reqwest/rustls-tls"]
