@@ -2,6 +2,7 @@
 
 use log::trace;
 use reqwest::{blocking::Client as HttpClient, header, StatusCode, Url};
+use serde::de::DeserializeOwned;
 
 use super::Error;
 use crate::convert::{
@@ -13,6 +14,9 @@ use crate::types::*;
 
 /// Base URL of the crates.io sparse registry index.
 const INDEX_BASE: &str = "https://index.crates.io/";
+/// Base URL of the crates.io REST API (used as fallback for methods not
+/// available in the sparse index).
+const API_BASE: &str = "https://crates.io/api/v1/";
 
 /// Synchronous client for the crates.io **sparse registry index**.
 ///
@@ -24,6 +28,7 @@ const INDEX_BASE: &str = "https://index.crates.io/";
 pub struct SyncClient {
     client: HttpClient,
     base_url: Url,
+    api_base_url: Url,
     rate_limit: std::time::Duration,
     last_request_time: std::sync::Mutex<Option<std::time::Instant>>,
 }
@@ -57,6 +62,7 @@ impl SyncClient {
                 .build()
                 .unwrap(),
             base_url: Url::parse(INDEX_BASE).expect("static base URL is valid"),
+            api_base_url: Url::parse(API_BASE).expect("static API base URL is valid"),
             rate_limit,
             last_request_time: std::sync::Mutex::new(None),
         })
@@ -99,6 +105,22 @@ impl SyncClient {
         res.text().map_err(Error::from)
     }
 
+    /// Perform a rate-limited GET request to the REST API and deserialize the
+    /// JSON response body into `T`.
+    fn get_json<T: DeserializeOwned>(&self, url: &Url) -> Result<T, Error> {
+        let content = self.get_text(url)?;
+
+        if let Ok(errors) = serde_json::from_str::<ApiErrors>(&content) {
+            return Err(Error::Api(errors));
+        }
+
+        serde_json::from_str::<T>(&content).map_err(|e| {
+            Error::JsonDecode(JsonDecodeError {
+                message: format!("Could not decode JSON from {url}: {e}"),
+            })
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Index fetch
     // -----------------------------------------------------------------------
@@ -131,19 +153,10 @@ impl SyncClient {
 
     /// Retrieve a summary of crates.io statistics.
     ///
-    /// **Note:** Always returns an empty [`Summary`] — see
-    /// [`AsyncClient::summary`](crate::AsyncClient::summary).
+    /// Falls back to the crates.io REST API (`/api/v1/summary`).
     pub fn summary(&self) -> Result<Summary, Error> {
-        Ok(Summary {
-            just_updated: vec![],
-            most_downloaded: vec![],
-            new_crates: vec![],
-            most_recently_downloaded: vec![],
-            num_crates: 0,
-            num_downloads: 0,
-            popular_categories: vec![],
-            popular_keywords: vec![],
-        })
+        let url = self.api_base_url.join("summary").map_err(Error::from)?;
+        self.get_json(&url)
     }
 
     /// Retrieve version and dependency information for a crate by name.
@@ -166,64 +179,86 @@ impl SyncClient {
 
     /// Retrieve download statistics for a crate.
     ///
-    /// **Note:** Always returns empty — see
-    /// [`AsyncClient::crate_downloads`](crate::AsyncClient::crate_downloads).
-    pub fn crate_downloads(&self, _crate_name: &str) -> Result<CrateDownloads, Error> {
-        Ok(CrateDownloads {
-            version_downloads: vec![],
-            meta: CrateDownloadsMeta {
-                extra_downloads: vec![],
-            },
-        })
+    /// Falls back to the crates.io REST API (`/api/v1/crates/{name}/downloads`).
+    pub fn crate_downloads(&self, crate_name: &str) -> Result<CrateDownloads, Error> {
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join("downloads")
+            .map_err(Error::from)?;
+        self.get_json(&url)
     }
 
     /// Retrieve the owners of a crate.
     ///
-    /// **Note:** Always returns an empty list — see
-    /// [`AsyncClient::crate_owners`](crate::AsyncClient::crate_owners).
-    pub fn crate_owners(&self, _crate_name: &str) -> Result<Vec<User>, Error> {
-        Ok(vec![])
+    /// Falls back to the crates.io REST API (`/api/v1/crates/{name}/owners`).
+    pub fn crate_owners(&self, crate_name: &str) -> Result<Vec<User>, Error> {
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join("owners")
+            .map_err(Error::from)?;
+        self.get_json::<Owners>(&url).map(|o| o.users)
     }
 
     /// Retrieve a single page of reverse dependencies.
     ///
-    /// **Note:** Always returns empty — see
-    /// [`AsyncClient::crate_reverse_dependencies_page`](crate::AsyncClient::crate_reverse_dependencies_page).
+    /// Falls back to the crates.io REST API
+    /// (`/api/v1/crates/{name}/reverse_dependencies`).
     pub fn crate_reverse_dependencies_page(
         &self,
-        _crate_name: &str,
-        _page: u64,
+        crate_name: &str,
+        page: u64,
     ) -> Result<ReverseDependencies, Error> {
-        Ok(ReverseDependencies {
+        let page = page.max(1);
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join(&format!("reverse_dependencies?per_page=100&page={page}"))
+            .map_err(Error::from)?;
+        let raw = self.get_json::<ReverseDependenciesAsReceived>(&url)?;
+        let mut deps = ReverseDependencies {
             dependencies: vec![],
             meta: Meta { total: 0 },
-        })
+        };
+        deps.extend(raw);
+        Ok(deps)
     }
 
     /// Retrieve all reverse dependencies of a crate.
     ///
-    /// **Note:** Always returns empty — see
-    /// [`AsyncClient::crate_reverse_dependencies`](crate::AsyncClient::crate_reverse_dependencies).
+    /// Falls back to the crates.io REST API, paginating automatically.
     pub fn crate_reverse_dependencies(
         &self,
         crate_name: &str,
     ) -> Result<ReverseDependencies, Error> {
-        self.crate_reverse_dependencies_page(crate_name, 1)
+        let mut all = ReverseDependencies {
+            dependencies: vec![],
+            meta: Meta { total: 0 },
+        };
+        for page_number in 1.. {
+            let page = self.crate_reverse_dependencies_page(crate_name, page_number)?;
+            if page.dependencies.is_empty() {
+                break;
+            }
+            all.dependencies.extend(page.dependencies);
+            all.meta.total = page.meta.total;
+        }
+        Ok(all)
     }
 
     /// Get the total count of reverse dependencies for a crate.
     ///
-    /// **Note:** Always returns `0`.
-    pub fn crate_reverse_dependency_count(&self, _crate_name: &str) -> Result<u64, Error> {
-        Ok(0)
+    /// Falls back to the crates.io REST API.
+    pub fn crate_reverse_dependency_count(&self, crate_name: &str) -> Result<u64, Error> {
+        let page = self.crate_reverse_dependencies_page(crate_name, 1)?;
+        Ok(page.meta.total)
     }
 
     /// Retrieve the authors for a crate version.
     ///
-    /// **Note:** Always returns an empty list — see
-    /// [`AsyncClient::crate_authors`](crate::AsyncClient::crate_authors).
-    pub fn crate_authors(&self, _crate_name: &str, _version: &str) -> Result<Authors, Error> {
-        Ok(Authors { names: vec![] })
+    /// Falls back to the crates.io REST API
+    /// (`/api/v1/crates/{name}/{version}/authors`).
+    pub fn crate_authors(&self, crate_name: &str, version: &str) -> Result<Authors, Error> {
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join(&format!("{version}/authors"))
+            .map_err(Error::from)?;
+        self.get_json::<AuthorsResponse>(&url)
+            .map(|r| Authors { names: r.meta.names })
     }
 
     /// Retrieve the dependencies for a specific version of a crate.
@@ -251,8 +286,10 @@ impl SyncClient {
             .collect())
     }
 
-    /// Build a [`FullVersion`] by fetching its dependency list from the index.
+    /// Build a [`FullVersion`] by fetching its dependency list from the index
+    /// and its author list from the REST API.
     fn full_version(&self, version: Version) -> Result<FullVersion, Error> {
+        let authors = self.crate_authors(&version.crate_name, &version.num)?;
         let deps = self.crate_dependencies(&version.crate_name, &version.num)?;
         Ok(FullVersion {
             created_at: version.created_at,
@@ -266,7 +303,7 @@ impl SyncClient {
             license: version.license,
             links: version.links,
             readme_path: version.readme_path,
-            author_names: vec![],
+            author_names: authors.names,
             dependencies: deps,
         })
     }
@@ -361,13 +398,35 @@ impl SyncClient {
 
     /// Retrieve a user by username.
     ///
-    /// **Note:** Always returns [`Error::NotFound`] — user information is not
-    /// available in the sparse index.
+    /// Falls back to the crates.io REST API (`/api/v1/users/{username}`).
     pub fn user(&self, username: &str) -> Result<User, Error> {
-        Err(Error::NotFound(NotFoundError {
-            url: format!("users/{}", username),
-        }))
+        let url = self
+            .api_base_url
+            .join(&format!("users/{}", username))
+            .map_err(Error::from)?;
+        self.get_json::<UserResponse>(&url).map(|r| r.user)
     }
+}
+
+// ---------------------------------------------------------------------------
+// REST API URL helpers
+// ---------------------------------------------------------------------------
+
+/// Build a URL for the REST API's `/crates/{name}/` path segment.
+///
+/// Returns `Err(NotFound)` when `crate_name` contains a slash.
+fn build_api_crate_url(base: &Url, crate_name: &str) -> Result<Url, Error> {
+    if crate_name.contains('/') {
+        return Err(Error::NotFound(NotFoundError {
+            url: format!("{base}crates/{crate_name}"),
+        }));
+    }
+    let mut url = base.join("crates/").map_err(Error::from)?;
+    url.path_segments_mut()
+        .unwrap()
+        .push(crate_name)
+        .push("");
+    Ok(url)
 }
 
 // ---------------------------------------------------------------------------
@@ -445,8 +504,8 @@ mod tests {
     fn test_summary_empty() -> Result<(), Error> {
         let client = build_test_client();
         let s = client.summary()?;
-        assert_eq!(s.num_crates, 0);
-        assert!(s.most_downloaded.is_empty());
+        assert!(s.num_crates > 0, "num_crates should be non-zero");
+        assert!(!s.most_downloaded.is_empty(), "most_downloaded should be non-empty");
         Ok(())
     }
 
@@ -454,7 +513,10 @@ mod tests {
     fn test_crate_downloads_empty() -> Result<(), Error> {
         let client = build_test_client();
         let dls = client.crate_downloads("serde")?;
-        assert!(dls.version_downloads.is_empty());
+        assert!(
+            !dls.version_downloads.is_empty(),
+            "serde should have download data"
+        );
         Ok(())
     }
 
@@ -462,24 +524,23 @@ mod tests {
     fn test_crate_owners_empty() -> Result<(), Error> {
         let client = build_test_client();
         let owners = client.crate_owners("serde")?;
-        assert!(owners.is_empty());
+        assert!(!owners.is_empty(), "serde should have owners");
         Ok(())
     }
 
     #[test]
-    fn test_user_not_found() {
+    fn test_user_not_found() -> Result<(), Error> {
         let client = build_test_client();
-        match client.user("theduke") {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("Expected NotFound, got {:?}", other),
-        }
+        let user = client.user("theduke")?;
+        assert_eq!(user.login, "theduke");
+        Ok(())
     }
 
     #[test]
     fn test_crate_reverse_dependency_count_zero() -> Result<(), Error> {
         let client = build_test_client();
         let count = client.crate_reverse_dependency_count("serde")?;
-        assert_eq!(count, 0);
+        assert!(count > 0, "serde should have reverse dependencies");
         Ok(())
     }
 }

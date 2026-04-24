@@ -3,6 +3,7 @@
 use futures::future::{try_join_all, BoxFuture};
 use futures::prelude::*;
 use reqwest::{header, Client as HttpClient, StatusCode, Url};
+use serde::de::DeserializeOwned;
 use std::collections::VecDeque;
 
 use super::Error;
@@ -15,6 +16,9 @@ use crate::types::*;
 
 /// Base URL of the crates.io sparse registry index.
 const INDEX_BASE: &str = "https://index.crates.io/";
+/// Base URL of the crates.io REST API (used as fallback for methods not
+/// available in the sparse index).
+const API_BASE: &str = "https://crates.io/api/v1/";
 
 // ---------------------------------------------------------------------------
 // CrateStream
@@ -109,22 +113,25 @@ impl futures::stream::Stream for CrateStream {
 /// Instead of querying the crates.io REST web API, this client fetches data
 /// directly from the official sparse registry index at
 /// `https://index.crates.io/`.  This is the same data source that Cargo uses
-/// for dependency resolution.
+/// for dependency resolution.  For data not available in the sparse index
+/// (download stats, owners, authors, reverse dependencies, summary
+/// statistics, user lookup), the client automatically falls back to the
+/// crates.io REST API at `https://crates.io/api/v1/`.
 ///
 /// # What is available
 ///
 /// | Capability                         | Status                                    |
 /// |------------------------------------|-------------------------------------------|
-/// | Version list, features, `yanked`   | ✓ Full                                    |
-/// | Dependency tree (per version)      | ✓ Full                                    |
+/// | Version list, features, `yanked`   | ✓ Full (index)                            |
+/// | Dependency tree (per version)      | ✓ Full (index)                            |
 /// | Max / max-stable version           | ✓ Derived from index                      |
-/// | Download counts                    | ✗ Always 0                               |
-/// | Owners                             | ✗ Always empty                           |
-/// | Authors                            | ✗ Always empty (not in index)            |
-/// | Reverse dependencies               | ✗ Always empty (requires full scan)      |
-/// | Summary statistics                 | ✗ Always zero / empty                    |
+/// | Download counts                    | ✓ REST API fallback                       |
+/// | Owners                             | ✓ REST API fallback                       |
+/// | Authors                            | ✓ REST API fallback                       |
+/// | Reverse dependencies               | ✓ REST API fallback                       |
+/// | Summary statistics                 | ✓ REST API fallback                       |
 /// | Crate search / listing             | ✓ Exact-name lookup only                 |
-/// | User lookup                        | ✗ Not available                          |
+/// | User lookup                        | ✓ REST API fallback                       |
 ///
 /// # Rate limiting
 ///
@@ -139,6 +146,7 @@ pub struct Client {
     rate_limit: std::time::Duration,
     last_request_time: std::sync::Arc<tokio::sync::Mutex<Option<tokio::time::Instant>>>,
     base_url: Url,
+    api_base_url: Url,
 }
 
 impl Client {
@@ -178,6 +186,7 @@ impl Client {
             last_request_time: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             client,
             base_url: Url::parse(INDEX_BASE).expect("static base URL is valid"),
+            api_base_url: Url::parse(API_BASE).expect("static API base URL is valid"),
         }
     }
 
@@ -217,6 +226,22 @@ impl Client {
         res.text().await.map_err(Error::from)
     }
 
+    /// Perform a rate-limited GET request to the REST API and deserialize the
+    /// JSON response body into `T`.
+    async fn get_json<T: DeserializeOwned>(&self, url: &Url) -> Result<T, Error> {
+        let content = self.get_text(url).await?;
+
+        if let Ok(errors) = serde_json::from_str::<ApiErrors>(&content) {
+            return Err(Error::Api(errors));
+        }
+
+        serde_json::from_str::<T>(&content).map_err(|e| {
+            Error::JsonDecode(JsonDecodeError {
+                message: format!("Could not decode JSON from {url}: {e}"),
+            })
+        })
+    }
+
     // -----------------------------------------------------------------------
     // Index fetch
     // -----------------------------------------------------------------------
@@ -252,21 +277,10 @@ impl Client {
 
     /// Retrieve a summary of crates.io statistics.
     ///
-    /// **Note:** The sparse index does not provide global statistics.  This
-    /// method always returns an empty [`Summary`] (zero counts, empty lists).
-    /// If summary statistics are required, use the crates.io web API client
-    /// from the `base` crate instead.
+    /// Falls back to the crates.io REST API (`/api/v1/summary`).
     pub async fn summary(&self) -> Result<Summary, Error> {
-        Ok(Summary {
-            just_updated: vec![],
-            most_downloaded: vec![],
-            new_crates: vec![],
-            most_recently_downloaded: vec![],
-            num_crates: 0,
-            num_downloads: 0,
-            popular_categories: vec![],
-            popular_keywords: vec![],
-        })
+        let url = self.api_base_url.join("summary").map_err(Error::from)?;
+        self.get_json(&url).await
     }
 
     /// Retrieve version and dependency information for a crate by name.
@@ -294,73 +308,96 @@ impl Client {
 
     /// Retrieve download statistics for a crate.
     ///
-    /// **Note:** The sparse index does not contain download data.  This method
-    /// always returns an empty [`CrateDownloads`].
-    pub async fn crate_downloads(&self, _crate_name: &str) -> Result<CrateDownloads, Error> {
-        Ok(CrateDownloads {
-            version_downloads: vec![],
-            meta: CrateDownloadsMeta {
-                extra_downloads: vec![],
-            },
-        })
+    /// Falls back to the crates.io REST API (`/api/v1/crates/{name}/downloads`).
+    pub async fn crate_downloads(&self, crate_name: &str) -> Result<CrateDownloads, Error> {
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join("downloads")
+            .map_err(Error::from)?;
+        self.get_json(&url).await
     }
 
     /// Retrieve the owners of a crate.
     ///
-    /// **Note:** Ownership information is not available in the sparse index.
-    /// This method always returns an empty list.
-    pub async fn crate_owners(&self, _crate_name: &str) -> Result<Vec<User>, Error> {
-        Ok(vec![])
+    /// Falls back to the crates.io REST API (`/api/v1/crates/{name}/owners`).
+    pub async fn crate_owners(&self, crate_name: &str) -> Result<Vec<User>, Error> {
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join("owners")
+            .map_err(Error::from)?;
+        self.get_json::<Owners>(&url).await.map(|o| o.users)
     }
 
     /// Retrieve a single page of reverse dependencies.
     ///
-    /// **Note:** Reverse dependencies require scanning the full index, which
-    /// is not supported in real time.  This method always returns an empty
-    /// [`ReverseDependencies`].
+    /// Falls back to the crates.io REST API
+    /// (`/api/v1/crates/{name}/reverse_dependencies`).
     pub async fn crate_reverse_dependencies_page(
         &self,
-        _crate_name: &str,
-        _page: u64,
+        crate_name: &str,
+        page: u64,
     ) -> Result<ReverseDependencies, Error> {
-        Ok(ReverseDependencies {
+        let page = page.max(1);
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join(&format!("reverse_dependencies?per_page=100&page={page}"))
+            .map_err(Error::from)?;
+        let raw = self.get_json::<ReverseDependenciesAsReceived>(&url).await?;
+        let mut deps = ReverseDependencies {
             dependencies: vec![],
             meta: Meta { total: 0 },
-        })
+        };
+        deps.extend(raw);
+        Ok(deps)
     }
 
     /// Retrieve all reverse dependencies of a crate.
     ///
-    /// **Note:** Always returns an empty [`ReverseDependencies`] — see
-    /// [`crate_reverse_dependencies_page`](Self::crate_reverse_dependencies_page).
+    /// Falls back to the crates.io REST API, paginating automatically.
     pub async fn crate_reverse_dependencies(
         &self,
         crate_name: &str,
     ) -> Result<ReverseDependencies, Error> {
-        self.crate_reverse_dependencies_page(crate_name, 1).await
+        let mut all = ReverseDependencies {
+            dependencies: vec![],
+            meta: Meta { total: 0 },
+        };
+        for page_number in 1.. {
+            let page = self
+                .crate_reverse_dependencies_page(crate_name, page_number)
+                .await?;
+            if page.dependencies.is_empty() {
+                break;
+            }
+            all.dependencies.extend(page.dependencies);
+            all.meta.total = page.meta.total;
+        }
+        Ok(all)
     }
 
     /// Get the total count of reverse dependencies for a crate.
     ///
-    /// **Note:** Always returns `0` — see
-    /// [`crate_reverse_dependencies_page`](Self::crate_reverse_dependencies_page).
+    /// Falls back to the crates.io REST API.
     pub async fn crate_reverse_dependency_count(
         &self,
-        _crate_name: &str,
+        crate_name: &str,
     ) -> Result<u64, Error> {
-        Ok(0)
+        let page = self.crate_reverse_dependencies_page(crate_name, 1).await?;
+        Ok(page.meta.total)
     }
 
     /// Retrieve the authors for a crate version.
     ///
-    /// **Note:** Author information is not present in the sparse index.  This
-    /// method always returns an empty [`Authors`] list.
+    /// Falls back to the crates.io REST API
+    /// (`/api/v1/crates/{name}/{version}/authors`).
     pub async fn crate_authors(
         &self,
-        _crate_name: &str,
-        _version: &str,
+        crate_name: &str,
+        version: &str,
     ) -> Result<Authors, Error> {
-        Ok(Authors { names: vec![] })
+        let url = build_api_crate_url(&self.api_base_url, crate_name)?
+            .join(&format!("{version}/authors"))
+            .map_err(Error::from)?;
+        self.get_json::<AuthorsResponse>(&url)
+            .await
+            .map(|r| Authors { names: r.meta.names })
     }
 
     /// Retrieve the dependencies for a specific version of a crate.
@@ -389,11 +426,13 @@ impl Client {
             .collect())
     }
 
-    /// Build a [`FullVersion`] by fetching its dependency list from the index.
+    /// Build a [`FullVersion`] by fetching its dependency list from the index
+    /// and its author list from the REST API.
     async fn full_version(&self, version: Version) -> Result<FullVersion, Error> {
-        let deps = self
-            .crate_dependencies(&version.crate_name, &version.num)
-            .await?;
+        let (authors, deps) = futures::try_join!(
+            self.crate_authors(&version.crate_name, &version.num),
+            self.crate_dependencies(&version.crate_name, &version.num),
+        )?;
         Ok(FullVersion {
             created_at: version.created_at,
             updated_at: version.updated_at,
@@ -406,8 +445,7 @@ impl Client {
             license: version.license,
             links: version.links,
             readme_path: version.readme_path,
-            // Authors not available in the index.
-            author_names: vec![],
+            author_names: authors.names,
             dependencies: deps,
         })
     }
@@ -415,11 +453,9 @@ impl Client {
     /// Retrieve complete information for a crate.
     ///
     /// The `all_versions` flag controls whether detailed information is
-    /// fetched for every version or only for the most recent one.  Each
-    /// version requires one additional index request.
-    ///
-    /// Fields not available in the sparse index (downloads, owners, reverse
-    /// dependencies, authors, license, …) are set to empty/zero defaults.
+    /// fetched for every version or only for the most recent one.  Version
+    /// data (dependencies, authors) is fetched from the sparse index and the
+    /// REST API respectively.
     pub async fn full_crate(&self, name: &str, all_versions: bool) -> Result<FullCrate, Error> {
         let krate = self.get_crate(name).await?;
         let versions = if krate.versions.is_empty() {
@@ -506,13 +542,35 @@ impl Client {
 
     /// Retrieve a user by username.
     ///
-    /// **Note:** User information is not available in the sparse index.  This
-    /// method always returns [`Error::NotFound`].
+    /// Falls back to the crates.io REST API (`/api/v1/users/{username}`).
     pub async fn user(&self, username: &str) -> Result<User, Error> {
-        Err(Error::NotFound(NotFoundError {
-            url: format!("users/{}", username),
-        }))
+        let url = self
+            .api_base_url
+            .join(&format!("users/{}", username))
+            .map_err(Error::from)?;
+        self.get_json::<UserResponse>(&url).await.map(|r| r.user)
     }
+}
+
+// ---------------------------------------------------------------------------
+// REST API URL helpers
+// ---------------------------------------------------------------------------
+
+/// Build a URL for the REST API's `/crates/{name}/` path segment.
+///
+/// Returns `Err(NotFound)` when `crate_name` contains a slash.
+fn build_api_crate_url(base: &Url, crate_name: &str) -> Result<Url, Error> {
+    if crate_name.contains('/') {
+        return Err(Error::NotFound(NotFoundError {
+            url: format!("{base}crates/{crate_name}"),
+        }));
+    }
+    let mut url = base.join("crates/").map_err(Error::from)?;
+    url.path_segments_mut()
+        .unwrap()
+        .push(crate_name)
+        .push("");
+    Ok(url)
 }
 
 // ---------------------------------------------------------------------------
@@ -606,42 +664,52 @@ mod tests {
         Ok(())
     }
 
-    /// Verify that `summary()` returns without error (data will be empty).
+    /// Verify that `summary()` returns real data from the REST API fallback.
     #[tokio::test]
     async fn test_summary_async() -> Result<(), Error> {
         let client = build_test_client();
         let s = client.summary().await?;
-        // Stats are not available from the index.
-        assert_eq!(s.num_crates, 0);
-        assert!(s.most_downloaded.is_empty());
+        assert!(s.num_crates > 0, "num_crates should be non-zero");
+        assert!(!s.most_downloaded.is_empty(), "most_downloaded should be non-empty");
         Ok(())
     }
 
-    /// Verify that `crate_downloads` returns an empty result without error.
+    /// Verify that `crate_downloads` returns real data from the REST API fallback.
     #[tokio::test]
     async fn test_crate_downloads_async() -> Result<(), Error> {
         let client = build_test_client();
         let dls = client.crate_downloads("serde").await?;
-        assert!(dls.version_downloads.is_empty());
+        assert!(
+            !dls.version_downloads.is_empty(),
+            "serde should have download data"
+        );
         Ok(())
     }
 
-    /// Verify that `crate_owners` returns an empty list without error.
+    /// Verify that `crate_owners` returns real data from the REST API fallback.
     #[tokio::test]
     async fn test_crate_owners_async() -> Result<(), Error> {
         let client = build_test_client();
         let owners = client.crate_owners("serde").await?;
-        assert!(owners.is_empty());
+        assert!(!owners.is_empty(), "serde should have owners");
         Ok(())
     }
 
-    /// Verify that `user()` returns NotFound.
+    /// Verify that `user()` returns a real user via the REST API fallback.
     #[tokio::test]
-    async fn test_user_not_found_async() {
+    async fn test_user_async() -> Result<(), Error> {
         let client = build_test_client();
-        match client.user("theduke").await {
-            Err(Error::NotFound(_)) => {}
-            other => panic!("Expected NotFound, got {:?}", other),
-        }
+        let user = client.user("theduke").await?;
+        assert_eq!(user.login, "theduke");
+        Ok(())
+    }
+
+    /// Verify that `crate_reverse_dependency_count` returns a positive number.
+    #[tokio::test]
+    async fn test_crate_reverse_dependency_count_async() -> Result<(), Error> {
+        let client = build_test_client();
+        let count = client.crate_reverse_dependency_count("serde").await?;
+        assert!(count > 0, "serde should have reverse dependencies");
+        Ok(())
     }
 }

@@ -414,6 +414,18 @@ pub struct Authors {
     pub names: Vec<String>,
 }
 
+/// API response wrapper for author metadata.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct AuthorsResponse {
+    pub meta: AuthorsMeta,
+}
+
+/// API response wrapper for a single user.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct UserResponse {
+    pub user: User,
+}
+
 /// Crate owners.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[allow(missing_docs)]
@@ -452,12 +464,36 @@ pub struct ReverseDependency {
     pub dependency: Dependency,
 }
 
+/// Raw reverse-dependency response as received from the REST API.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub(crate) struct ReverseDependenciesAsReceived {
+    pub dependencies: Vec<Dependency>,
+    pub versions: Vec<Version>,
+    pub meta: Meta,
+}
+
 /// Full list of reverse dependencies for a crate.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[allow(missing_docs)]
 pub struct ReverseDependencies {
     pub dependencies: Vec<ReverseDependency>,
     pub meta: Meta,
+}
+
+impl ReverseDependencies {
+    pub(crate) fn extend(&mut self, rdeps: ReverseDependenciesAsReceived) {
+        self.meta.total = rdeps.meta.total;
+        for d in &rdeps.dependencies {
+            for v in &rdeps.versions {
+                if v.id == d.version_id {
+                    self.dependencies.push(ReverseDependency {
+                        crate_version: v.clone(),
+                        dependency: d.clone(),
+                    });
+                }
+            }
+        }
+    }
 }
 
 /// Complete information for a crate version (including authors and dependencies).
