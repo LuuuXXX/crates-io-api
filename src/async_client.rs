@@ -91,41 +91,19 @@ impl futures::stream::Stream for CrateStream {
             return std::task::Poll::Ready(Some(Ok(krate)));
         }
 
-        // Poll an in-flight page request.
-        if let Some(mut fut) = inner.next_page_fetch.take() {
-            return match fut.poll_unpin(cx) {
-                std::task::Poll::Ready(res) => match res {
-                    Ok(page) if page.crates.is_empty() => {
-                        inner.closed = true;
-                        std::task::Poll::Ready(None)
-                    }
-                    Ok(page) => {
-                        let mut iter = page.crates.into_iter();
-                        let next = iter.next();
-                        inner.items.extend(iter);
-                        std::task::Poll::Ready(next.map(Ok))
-                    }
-                    Err(err) => {
-                        inner.closed = true;
-                        std::task::Poll::Ready(Some(Err(err)))
-                    }
-                },
-                std::task::Poll::Pending => {
-                    inner.next_page_fetch = Some(fut);
-                    std::task::Poll::Pending
-                }
-            };
-        }
+        // Get an in-flight future (existing) or create one for the next page.
+        let mut f = if let Some(fut) = inner.next_page_fetch.take() {
+            fut
+        } else {
+            let filter = inner.filter.clone();
+            inner.filter.page += 1;
+            let c = inner.client.clone();
+            Box::pin(async move { c.crates(filter).await })
+        };
 
-        // No future in flight — create one for the next page and poll it
-        // immediately.  `crates()` may resolve synchronously (e.g., returning
-        // an empty page when no search term is set), so we handle both Ready
-        // and Pending without asserting.
-        let filter = inner.filter.clone();
-        inner.filter.page += 1;
-
-        let c = inner.client.clone();
-        let mut f = Box::pin(async move { c.crates(filter).await });
+        // Poll the future and handle both Ready and Pending.  `crates()` can
+        // resolve synchronously (e.g., when no search term returns an empty
+        // page immediately), so we must not assume it is always Pending.
         match f.poll_unpin(cx) {
             std::task::Poll::Ready(res) => match res {
                 Ok(page) if page.crates.is_empty() => {
