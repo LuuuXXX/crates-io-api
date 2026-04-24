@@ -185,10 +185,10 @@ pub fn entries_to_crate(crate_name: &str, entries: &[IndexEntry]) -> Crate {
         repository: None,
         downloads: 0,
         recent_downloads: None,
-        // The index does not carry category/keyword data; callers may enrich
-        // the struct from other sources if needed.
-        categories: Some(vec![]),
-        keywords: Some(vec![]),
+        // The index does not carry category/keyword data.  Use `None` to
+        // signal "unavailable" rather than `Some(vec![])` ("known to be empty").
+        categories: None,
+        keywords: None,
         versions: Some(
             entries
                 .iter()

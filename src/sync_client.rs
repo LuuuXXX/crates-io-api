@@ -79,7 +79,7 @@ impl SyncClient {
             client: HttpClient::builder()
                 .default_headers(headers)
                 .build()
-                .unwrap(),
+                .expect("reqwest blocking client build should not fail; check TLS/proxy configuration"),
             base_url: Url::parse(INDEX_BASE).expect("static base URL is valid"),
             api_base_url: Url::parse(API_BASE).expect("static API base URL is valid"),
             rate_limit,
@@ -92,18 +92,37 @@ impl SyncClient {
     // -----------------------------------------------------------------------
 
     /// Perform a rate-limited GET request and return the response body as text.
+    ///
+    /// The mutex is held only long enough to compute the required sleep
+    /// duration and to record the current instant.  The lock is released
+    /// before sleeping and before the blocking network call, so other threads
+    /// can schedule their own delays without blocking on I/O.
     fn get_text(&self, url: &Url) -> Result<String, Error> {
         trace!("GET {}", url);
 
-        let mut lock = self.last_request_time.lock().unwrap();
-        if let Some(last) = lock.take() {
+        let delay = {
+            let mut lock = self.last_request_time.lock().unwrap();
             let now = std::time::Instant::now();
-            if last.elapsed() < self.rate_limit {
-                std::thread::sleep((last + self.rate_limit) - now);
+            let delay = lock.map(|last| {
+                let elapsed = now.duration_since(last);
+                if elapsed < self.rate_limit {
+                    self.rate_limit - elapsed
+                } else {
+                    std::time::Duration::ZERO
+                }
+            });
+            // Record the time now so concurrent callers see an up-to-date
+            // value while we sleep / wait for the network.
+            *lock = Some(now);
+            delay
+        }; // lock released here — no I/O happens while it is held
+
+        if let Some(d) = delay {
+            if !d.is_zero() {
+                std::thread::sleep(d);
             }
         }
 
-        let time = std::time::Instant::now();
         let res = self.client.get(url.clone()).send()?;
 
         if !res.status().is_success() {
@@ -120,7 +139,6 @@ impl SyncClient {
             return Err(err);
         }
 
-        *lock = Some(time);
         res.text().map_err(Error::from)
     }
 
@@ -482,6 +500,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_get_crate() -> Result<(), Error> {
         let client = build_test_client();
         let resp = client.get_crate("serde")?;
@@ -492,6 +511,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_crate_dependencies() -> Result<(), Error> {
         let client = build_test_client();
         let deps = client.crate_dependencies("serde_json", "1.0.0")?;
@@ -504,6 +524,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_full_crate() -> Result<(), Error> {
         let client = build_test_client();
         let fc = client.full_crate("log", false)?;
@@ -528,6 +549,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_crates_exact_search() -> Result<(), Error> {
         let client = build_test_client();
         let page = client.crates(CratesQuery::builder().search("serde").build())?;
@@ -537,6 +559,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_summary_empty() -> Result<(), Error> {
         let client = build_test_client();
         let s = client.summary()?;
@@ -546,6 +569,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_crate_downloads_empty() -> Result<(), Error> {
         let client = build_test_client();
         let dls = client.crate_downloads("serde")?;
@@ -557,6 +581,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_crate_owners_empty() -> Result<(), Error> {
         let client = build_test_client();
         let owners = client.crate_owners("serde")?;
@@ -565,6 +590,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_user_not_found() -> Result<(), Error> {
         let client = build_test_client();
         let user = client.user("theduke")?;
@@ -573,6 +599,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires network access to crates.io"]
     fn test_crate_reverse_dependency_count_zero() -> Result<(), Error> {
         let client = build_test_client();
         let count = client.crate_reverse_dependency_count("serde")?;

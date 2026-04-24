@@ -123,7 +123,6 @@ impl futures::stream::Stream for CrateStream {
             },
             std::task::Poll::Pending => {
                 inner.next_page_fetch = Some(f);
-                cx.waker().clone().wake();
                 std::task::Poll::Pending
             }
         }
@@ -201,7 +200,7 @@ impl Client {
         let client = HttpClient::builder()
             .default_headers(headers)
             .build()
-            .unwrap();
+            .expect("reqwest async client build should not fail; check TLS/proxy configuration");
         Ok(Self::with_http_client(client, rate_limit))
     }
 
@@ -224,17 +223,35 @@ impl Client {
     // -----------------------------------------------------------------------
 
     /// Perform a rate-limited GET request and return the response body as text.
+    ///
+    /// The mutex is held only long enough to compute the required sleep
+    /// duration and record the current instant.  The lock is released before
+    /// sleeping and before the network request, so concurrent callers can
+    /// schedule their own delays without serialising on I/O.
     async fn get_text(&self, url: &Url) -> Result<String, Error> {
-        let mut lock = self.last_request_time.clone().lock_owned().await;
+        let delay = {
+            let mut lock = self.last_request_time.clone().lock_owned().await;
+            let now = tokio::time::Instant::now();
+            let delay = lock.map(|last| {
+                let elapsed = now.duration_since(last);
+                if elapsed < self.rate_limit {
+                    self.rate_limit - elapsed
+                } else {
+                    std::time::Duration::ZERO
+                }
+            });
+            // Record the time now so concurrent callers see an up-to-date
+            // value while we sleep / wait for the network.
+            *lock = Some(now);
+            delay
+        }; // lock released here — no I/O happens while it is held
 
-        if let Some(last) = lock.take() {
-            let elapsed = last.elapsed();
-            if elapsed < self.rate_limit {
-                tokio::time::sleep(self.rate_limit - elapsed).await;
+        if let Some(d) = delay {
+            if !d.is_zero() {
+                tokio::time::sleep(d).await;
             }
         }
 
-        let time = tokio::time::Instant::now();
         let res = self.client.get(url.clone()).send().await?;
 
         if !res.status().is_success() {
@@ -251,7 +268,6 @@ impl Client {
             return Err(err);
         }
 
-        *lock = Some(time);
         res.text().await.map_err(Error::from)
     }
 
@@ -621,6 +637,7 @@ mod tests {
     /// Verify that `get_crate` returns a populated `CrateResponse` for a
     /// well-known crate.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_get_crate_async() -> Result<(), Error> {
         let client = build_test_client();
         let resp = client.get_crate("serde").await?;
@@ -635,6 +652,7 @@ mod tests {
 
     /// Verify that the dependency list for a specific version is populated.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_crate_dependencies_async() -> Result<(), Error> {
         let client = build_test_client();
         // serde 1.0.0 has no dependencies.
@@ -646,6 +664,7 @@ mod tests {
 
     /// Verify that the dependency list for a version with known deps works.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_crate_dependencies_nonempty_async() -> Result<(), Error> {
         let client = build_test_client();
         // serde_json depends on serde.
@@ -663,6 +682,7 @@ mod tests {
 
     /// Verify the full_crate helper returns a valid FullCrate.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_full_crate_async() -> Result<(), Error> {
         let client = build_test_client();
         let fc = client.full_crate("log", false).await?;
@@ -683,6 +703,7 @@ mod tests {
 
     /// Verify that the exact-name search path of `crates()` works.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_crates_exact_search_async() -> Result<(), Error> {
         let client = build_test_client();
         let page = client
@@ -695,6 +716,7 @@ mod tests {
 
     /// Verify that `summary()` returns real data from the REST API fallback.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_summary_async() -> Result<(), Error> {
         let client = build_test_client();
         let s = client.summary().await?;
@@ -705,6 +727,7 @@ mod tests {
 
     /// Verify that `crate_downloads` returns real data from the REST API fallback.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_crate_downloads_async() -> Result<(), Error> {
         let client = build_test_client();
         let dls = client.crate_downloads("serde").await?;
@@ -717,6 +740,7 @@ mod tests {
 
     /// Verify that `crate_owners` returns real data from the REST API fallback.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_crate_owners_async() -> Result<(), Error> {
         let client = build_test_client();
         let owners = client.crate_owners("serde").await?;
@@ -726,6 +750,7 @@ mod tests {
 
     /// Verify that `user()` returns a real user via the REST API fallback.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_user_async() -> Result<(), Error> {
         let client = build_test_client();
         let user = client.user("theduke").await?;
@@ -735,6 +760,7 @@ mod tests {
 
     /// Verify that `crate_reverse_dependency_count` returns a positive number.
     #[tokio::test]
+    #[ignore = "requires network access to crates.io"]
     async fn test_crate_reverse_dependency_count_async() -> Result<(), Error> {
         let client = build_test_client();
         let count = client.crate_reverse_dependency_count("serde").await?;
