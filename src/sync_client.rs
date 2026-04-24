@@ -423,7 +423,7 @@ fn build_api_crate_url(base: &Url, crate_name: &str) -> Result<Url, Error> {
     }
     let mut url = base.join("crates/").map_err(Error::from)?;
     url.path_segments_mut()
-        .unwrap()
+        .expect("API base URL always has a base")
         .push(crate_name)
         .push("");
     Ok(url)

@@ -483,14 +483,14 @@ pub struct ReverseDependencies {
 impl ReverseDependencies {
     pub(crate) fn extend(&mut self, rdeps: ReverseDependenciesAsReceived) {
         self.meta.total = rdeps.meta.total;
+        let version_map: HashMap<u64, &Version> =
+            rdeps.versions.iter().map(|v| (v.id, v)).collect();
         for d in &rdeps.dependencies {
-            for v in &rdeps.versions {
-                if v.id == d.version_id {
-                    self.dependencies.push(ReverseDependency {
-                        crate_version: v.clone(),
-                        dependency: d.clone(),
-                    });
-                }
+            if let Some(v) = version_map.get(&d.version_id) {
+                self.dependencies.push(ReverseDependency {
+                    crate_version: (*v).clone(),
+                    dependency: d.clone(),
+                });
             }
         }
     }
