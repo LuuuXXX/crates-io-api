@@ -1,4 +1,25 @@
 //! Asynchronous client backed by the crates.io sparse registry index.
+//!
+//! The primary type is [`Client`] (re-exported as `AsyncClient`).
+//! Use [`Client::new`] to create a client and then call the methods
+//! on it to query the registry.
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use crates_io_api::{AsyncClient, Error};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Error> {
+//!     let client = AsyncClient::new(
+//!         "my-bot (contact@example.com)",
+//!         std::time::Duration::from_millis(1000),
+//!     )?;
+//!     let krate = client.get_crate("serde").await?;
+//!     println!("serde max version: {}", krate.crate_data.max_version);
+//!     Ok(())
+//! }
+//! ```
 
 use futures::future::{try_join_all, BoxFuture};
 use futures::prelude::*;
@@ -29,6 +50,9 @@ const API_BASE: &str = "https://crates.io/api/v1/";
 /// Created by [`Client::crates_stream`].  Because the sparse index does not
 /// support arbitrary listing, the stream terminates after the first page that
 /// returns no crates.
+///
+/// The stream implements [`futures::stream::Stream`] and can be used with the
+/// standard combinators in [`futures::stream::StreamExt`].
 pub struct CrateStream {
     client: Client,
     filter: CratesQuery,
@@ -62,10 +86,12 @@ impl futures::stream::Stream for CrateStream {
             return std::task::Poll::Ready(None);
         }
 
+        // Yield any buffered items from the previous page first.
         if let Some(krate) = inner.items.pop_front() {
             return std::task::Poll::Ready(Some(Ok(krate)));
         }
 
+        // Poll an in-flight page request.
         if let Some(mut fut) = inner.next_page_fetch.take() {
             return match fut.poll_unpin(cx) {
                 std::task::Poll::Ready(res) => match res {
@@ -91,16 +117,38 @@ impl futures::stream::Stream for CrateStream {
             };
         }
 
+        // No future in flight — create one for the next page and poll it
+        // immediately.  `crates()` may resolve synchronously (e.g., returning
+        // an empty page when no search term is set), so we handle both Ready
+        // and Pending without asserting.
         let filter = inner.filter.clone();
         inner.filter.page += 1;
 
         let c = inner.client.clone();
         let mut f = Box::pin(async move { c.crates(filter).await });
-        assert!(matches!(f.poll_unpin(cx), std::task::Poll::Pending));
-        inner.next_page_fetch = Some(f);
-
-        cx.waker().clone().wake();
-        std::task::Poll::Pending
+        match f.poll_unpin(cx) {
+            std::task::Poll::Ready(res) => match res {
+                Ok(page) if page.crates.is_empty() => {
+                    inner.closed = true;
+                    std::task::Poll::Ready(None)
+                }
+                Ok(page) => {
+                    let mut iter = page.crates.into_iter();
+                    let next = iter.next();
+                    inner.items.extend(iter);
+                    std::task::Poll::Ready(next.map(Ok))
+                }
+                Err(err) => {
+                    inner.closed = true;
+                    std::task::Poll::Ready(Some(Err(err)))
+                }
+            },
+            std::task::Poll::Pending => {
+                inner.next_page_fetch = Some(f);
+                cx.waker().clone().wake();
+                std::task::Poll::Pending
+            }
+        }
     }
 }
 
@@ -180,6 +228,9 @@ impl Client {
     }
 
     /// Create a client from an already-configured [`reqwest::Client`].
+    ///
+    /// Use this when you need custom TLS configuration, a proxy, or other
+    /// advanced `reqwest` settings.
     pub fn with_http_client(client: HttpClient, rate_limit: std::time::Duration) -> Self {
         Self {
             rate_limit,

@@ -1,4 +1,23 @@
-//! Synchronous client backed by the crates.io sparse registry index.
+//! Synchronous (blocking) client backed by the crates.io sparse registry index.
+//!
+//! The primary type is [`SyncClient`].  Use [`SyncClient::new`] to create
+//! a client and call its methods to query the registry.
+//!
+//! # Example
+//!
+//! ```rust,no_run
+//! use crates_io_api::{SyncClient, Error};
+//!
+//! fn main() -> Result<(), Error> {
+//!     let client = SyncClient::new(
+//!         "my-bot (contact@example.com)",
+//!         std::time::Duration::from_millis(1000),
+//!     )?;
+//!     let krate = client.get_crate("tokio")?;
+//!     println!("tokio max version: {}", krate.crate_data.max_version);
+//!     Ok(())
+//! }
+//! ```
 
 use log::trace;
 use reqwest::{blocking::Client as HttpClient, header, StatusCode, Url};
@@ -160,6 +179,13 @@ impl SyncClient {
     }
 
     /// Retrieve version and dependency information for a crate by name.
+    ///
+    /// The returned [`CrateResponse`] is fully populated for fields available
+    /// in the sparse index.  Fields such as `description`, `homepage`,
+    /// `downloads`, `categories`, and `keywords` are not present in the index
+    /// and are set to `None` / `0` / empty.
+    ///
+    /// Returns [`Error::NotFound`] if the crate is absent from the index.
     pub fn get_crate(&self, crate_name: &str) -> Result<CrateResponse, Error> {
         let entries = self.get_index_entries(crate_name)?;
         if entries.is_empty() {
@@ -263,7 +289,11 @@ impl SyncClient {
 
     /// Retrieve the dependencies for a specific version of a crate.
     ///
-    /// Fully supported from the sparse index.
+    /// This is fully supported from the sparse index: the index stores the
+    /// complete dependency list for every published version.
+    ///
+    /// Returns [`Error::NotFound`] if the crate or the specific version is not
+    /// present in the index.
     pub fn crate_dependencies(
         &self,
         crate_name: &str,
@@ -310,7 +340,13 @@ impl SyncClient {
 
     /// Retrieve complete information for a crate.
     ///
-    /// Fields not available in the sparse index are set to empty/zero defaults.
+    /// When `all_versions` is `true`, a [`FullVersion`] is built for every
+    /// version in the index (each requiring one additional REST API call for
+    /// authors).  When `false`, only the most recently listed version is
+    /// fetched.
+    ///
+    /// Download statistics, owner list, and reverse dependencies are fetched
+    /// from the crates.io REST API.
     pub fn full_crate(&self, name: &str, all_versions: bool) -> Result<FullCrate, Error> {
         let resp = self.get_crate(name)?;
         let data = resp.crate_data;

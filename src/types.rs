@@ -1,7 +1,15 @@
 //! Types for the data available from the crates.io registry.
 //!
-//! All types are identical to those from the crates.io web API library so
-//! this crate can be used as a **drop-in replacement**.
+//! All types are identical to those exposed by the crates.io web API library,
+//! so this crate can be used as a **drop-in replacement**.
+//!
+//! # Data availability
+//!
+//! Fields that are not present in the sparse registry index (such as
+//! `downloads`, `license`, and timestamps on [`Version`]) are either fetched
+//! via the REST API fallback or set to a safe default (`0`, `None`, or the
+//! Unix epoch).  See the crate-level documentation for the full capability
+//! table.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_derive::*;
@@ -148,6 +156,22 @@ impl Default for CratesQuery {
 }
 
 /// Builder for [`CratesQuery`].
+///
+/// Construct one via [`CratesQuery::builder`], configure it with the
+/// chainable setters, and call [`build`](Self::build) to obtain the final
+/// [`CratesQuery`].
+///
+/// # Example
+///
+/// ```rust
+/// use crates_io_api::{CratesQuery, Sort};
+///
+/// let query = CratesQuery::builder()
+///     .search("serde")
+///     .sort(Sort::Downloads)
+///     .page_size(25)
+///     .build();
+/// ```
 pub struct CratesQueryBuilder {
     query: CratesQuery,
 }

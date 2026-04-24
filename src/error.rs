@@ -1,6 +1,28 @@
-//! Error types.
+//! Error types for the crates.io API client.
+//!
+//! The central type is [`Error`], an enum that covers all failure modes that
+//! can arise when calling the crates.io sparse registry index or the REST API.
+//!
+//! # Error handling
+//!
+//! ```rust,no_run
+//! use crates_io_api::{SyncClient, Error, NotFoundError};
+//!
+//! fn lookup(name: &str) {
+//!     let client = SyncClient::new("my-bot (bot@example.com)",
+//!         std::time::Duration::from_secs(1)).unwrap();
+//!     match client.get_crate(name) {
+//!         Ok(resp) => println!("Found: {}", resp.crate_data.name),
+//!         Err(Error::NotFound(_)) => println!("{name} not found in registry"),
+//!         Err(e) => eprintln!("error: {e}"),
+//!     }
+//! }
+//! ```
 
 /// Errors returned by the API client.
+///
+/// This is a non-exhaustive enum; new variants may be added in future minor
+/// releases without a breaking change.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
@@ -68,6 +90,9 @@ impl From<url::ParseError> for Error {
 }
 
 /// Error returned when JSON from the registry could not be decoded.
+///
+/// This can occur if the registry returns an unexpected response shape or if
+/// the internal type definitions drift from the actual API schema.
 #[derive(Debug)]
 pub struct JsonDecodeError {
     pub(crate) message: String,
@@ -81,7 +106,9 @@ impl std::fmt::Display for JsonDecodeError {
 
 impl std::error::Error for JsonDecodeError {}
 
-/// Error returned when a resource could not be found.
+/// Error returned when a resource could not be found (HTTP 404).
+///
+/// The `url` field contains the URL that returned a 404 response.
 #[derive(Debug)]
 pub struct NotFoundError {
     pub(crate) url: String,
@@ -93,7 +120,10 @@ impl std::fmt::Display for NotFoundError {
     }
 }
 
-/// Error returned when a resource is not accessible.
+/// Error returned when a resource is not accessible (HTTP 403).
+///
+/// The `reason` field may contain the body of the error response from
+/// the server.
 #[derive(Debug)]
 pub struct PermissionDeniedError {
     pub(crate) reason: String,
