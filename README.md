@@ -25,9 +25,9 @@ This implementation queries those files directly, which means:
 
 ```
 src/
-  lib.rs          — public re-exports (identical to base/; drop-in compatible)
-  error.rs        — Error enum (identical to base/)
-  types.rs        — public data types (identical to base/)
+  lib.rs          — public re-exports (drop-in compatible with base/)
+  error.rs        — Error enum (largely based on base/, with small local adjustments)
+  types.rs        — public data types (API-compatible subset based on base/)
   index.rs        — sparse index URL computation, ndjson parser, type converters
   sync_client.rs  — SyncClient (blocking) backed by the sparse index
   async_client.rs — AsyncClient (async) backed by the sparse index

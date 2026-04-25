@@ -178,9 +178,10 @@ pub(crate) fn entries_to_crate_response(
     queried_name: &str,
     entries: &[IndexEntry],
 ) -> CrateResponse {
-    let now: DateTime<Utc> = Utc::now();
-    // Use 1970-01-01 as a sentinel "unknown" timestamp for per-version data.
-    let epoch: DateTime<Utc> = Utc.timestamp_opt(0, 0).single().unwrap_or(now);
+    // Use 1970-01-01 as a sentinel "unknown" timestamp for all timestamps
+    // (per-version and crate-level). This is more honest than Utc::now(), which
+    // would imply the crate was just updated.
+    let epoch: DateTime<Utc> = Utc.timestamp_opt(0, 0).single().unwrap();
 
     // The canonical display name comes from the first entry's `name` field
     // (preserving the original casing published by the author).
@@ -306,8 +307,8 @@ pub(crate) fn entries_to_crate_response(
             version_downloads: format!("/api/v1/crates/{display_name}/downloads"),
             versions: None,
         },
-        created_at: now,
-        updated_at: now,
+        created_at: epoch,
+        updated_at: epoch,
         exact_match: Some(true),
     };
 

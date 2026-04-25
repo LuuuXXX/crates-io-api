@@ -7,7 +7,7 @@ use reqwest::{header, Client as HttpClient, StatusCode};
 use std::collections::VecDeque;
 
 use crate::{
-    error::{Error, NotFoundError, PermissionDeniedError},
+    error::{Error, JsonDecodeError, NotFoundError, PermissionDeniedError},
     index::{
         build_deps_map, build_index_url, empty_crate_downloads, empty_reverse_dependencies,
         entries_to_crate_response, entries_to_dependencies, not_supported, parse_index_entries,
@@ -196,11 +196,19 @@ impl Client {
         let body = self.fetch_text(url).await?;
         let entries = parse_index_entries(&body);
         if entries.is_empty() {
-            return Err(Error::NotFound(NotFoundError {
-                url: format!(
-                    "{}{}",
-                    crate::index::SPARSE_INDEX_BASE,
-                    crate::index::index_path(crate_name)
+            if body.trim().is_empty() {
+                return Err(Error::NotFound(NotFoundError {
+                    url: format!(
+                        "{}{}",
+                        crate::index::SPARSE_INDEX_BASE,
+                        crate::index::index_path(crate_name)
+                    ),
+                }));
+            }
+            return Err(Error::JsonDecode(JsonDecodeError {
+                message: format!(
+                    "sparse index response for crate `{}` contained no valid entries",
+                    crate_name
                 ),
             }));
         }
@@ -285,11 +293,19 @@ impl Client {
         let body = self.fetch_text(url).await?;
         let entries = parse_index_entries(&body);
         if entries.is_empty() {
-            return Err(Error::NotFound(NotFoundError {
-                url: format!(
-                    "{}{}",
-                    crate::index::SPARSE_INDEX_BASE,
-                    crate::index::index_path(name)
+            if body.trim().is_empty() {
+                return Err(Error::NotFound(NotFoundError {
+                    url: format!(
+                        "{}{}",
+                        crate::index::SPARSE_INDEX_BASE,
+                        crate::index::index_path(name)
+                    ),
+                }));
+            }
+            return Err(Error::JsonDecode(JsonDecodeError {
+                message: format!(
+                    "sparse index response for crate `{}` contained no valid entries",
+                    name
                 ),
             }));
         }
