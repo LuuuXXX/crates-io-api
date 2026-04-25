@@ -32,7 +32,9 @@ pub struct Client {
 /// An infinite stream of crates matching a [`CratesQuery`].
 ///
 /// **Note:** Crate enumeration is not available via the sparse registry index.
-/// This stream will always yield zero items.
+/// The first item yielded by this stream will always be
+/// `Err(Error::Api { .. })` ("not supported"), matching the behaviour of
+/// [`Client::crates`].
 pub struct CrateStream {
     // Fields kept for API compatibility with the base crate.
     #[allow(dead_code)]
@@ -99,9 +101,9 @@ impl futures::stream::Stream for CrateStream {
             };
         }
 
-        // The sparse index does not support enumeration: close the stream.
+        // The sparse index does not support enumeration: yield an error and close.
         inner.closed = true;
-        std::task::Poll::Ready(None)
+        std::task::Poll::Ready(Some(Err(not_supported("crates"))))
     }
 }
 
@@ -449,11 +451,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn crates_stream_is_empty() {
+    async fn crates_stream_yields_error() {
         let client = test_client();
         let mut stream = client.crates_stream(CratesQuery::default());
         let item = stream.next().await;
-        assert!(item.is_none());
+        // The sparse index doesn't support enumeration; the stream should
+        // yield a single Err and then close (not silently yield None).
+        assert!(item.is_some(), "expected an Err item, got None");
+        assert!(item.unwrap().is_err());
+        // After the error the stream should be closed.
+        assert!(stream.next().await.is_none());
     }
 
     // ── Integration tests (require network) ──────────────────────────────────

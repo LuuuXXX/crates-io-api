@@ -142,9 +142,9 @@ pub(crate) fn index_path(crate_name: &str) -> String {
 }
 
 /// Return the full sparse-index URL for `crate_name`, or an [`Error::NotFound`]
-/// if the name contains a `/` (which the index does not support).
+/// if the name is empty or contains a `/` (which the index does not support).
 pub(crate) fn build_index_url(crate_name: &str) -> Result<url::Url, Error> {
-    if crate_name.contains('/') {
+    if crate_name.is_empty() || crate_name.contains('/') {
         return Err(Error::NotFound(NotFoundError {
             url: format!("{SPARSE_INDEX_BASE}{}", index_path(crate_name)),
         }));
@@ -363,8 +363,7 @@ pub(crate) fn build_deps_map(
 
 fn index_deps_to_dependencies(deps: &[IndexDep], version_id: u64) -> Vec<Dependency> {
     deps.iter()
-        .enumerate()
-        .map(|(i, d)| {
+        .map(|d| {
             // When a dependency is renamed, `package` holds the real crate name.
             let crate_id = d
                 .package
@@ -377,7 +376,7 @@ fn index_deps_to_dependencies(deps: &[IndexDep], version_id: u64) -> Vec<Depende
                 default_features: d.default_features,
                 downloads: 0,
                 features: d.features.clone(),
-                id: (i + 1) as u64,
+                id: 0,
                 kind: d.kind.as_deref().unwrap_or("normal").to_string(),
                 optional: d.optional,
                 req: d.req.clone(),
@@ -457,6 +456,11 @@ mod tests {
     #[test]
     fn test_build_index_url_rejects_slash() {
         assert!(matches!(build_index_url("a/b"), Err(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn test_build_index_url_rejects_empty() {
+        assert!(matches!(build_index_url(""), Err(Error::NotFound(_))));
     }
 
     #[test]
