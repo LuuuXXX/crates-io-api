@@ -79,7 +79,7 @@ web API.  The conversion fills unavailable fields with safe defaults:
 | `max_stable_version`| Highest non-yanked stable (no pre-release) semver       |
 | `versions` (ids)    | Synthetic 1-based IDs assigned newest-first (1 = newest)|
 | `description` / `license` / `downloads` | Not in index → `None` / `0`    |
-| `created_at` / `updated_at` | Not in index → current UTC time               |
+| `created_at` / `updated_at` | Not in index → Unix epoch (unknown sentinel)  |
 | `links`             | Synthesised from crate name                             |
 | `exact_match`       | Always `true` (queried by exact name)                  |
 

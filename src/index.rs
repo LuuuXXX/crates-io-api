@@ -28,7 +28,7 @@
 //! | versions (ids)     | synthetic 1-based IDs assigned newest-first    |
 //! | description        | not available → `None`                         |
 //! | downloads          | not available → `0`                            |
-//! | created_at/updated_at | not available → current UTC time           |
+//! | created_at/updated_at | not available → epoch                      |
 //! | links              | synthesised from crate name                    |
 //! | exact_match        | always `true` (queried by exact name)          |
 //!
