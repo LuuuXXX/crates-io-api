@@ -164,12 +164,13 @@ impl Client {
         }
 
         let request_start = tokio::time::Instant::now();
-        let res = self.client.get(url.clone()).send().await?;
 
-        // Record the attempt time regardless of outcome so that even failed
-        // requests are throttled, matching the "at most one request per
+        // Record the attempt time before sending so transport/DNS/connect
+        // failures are also throttled, matching the "at most one request per
         // rate_limit duration" contract.
         *lock = Some(request_start);
+
+        let res = self.client.get(url.clone()).send().await?;
 
         if !res.status().is_success() {
             return Err(match res.status() {
