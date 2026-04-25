@@ -363,11 +363,12 @@ mod tests {
         .unwrap()
     }
 
-    /// SyncClient must be Send so it can be used across threads.
+    fn assert_send_sync<T: Send + Sync>() {}
+
+    /// SyncClient must be Send + Sync so it can be moved/shared across threads.
     #[test]
     fn sync_client_is_send() {
-        let client = test_client();
-        let _: &dyn Send = &client;
+        assert_send_sync::<SyncClient>();
     }
 
     #[test]

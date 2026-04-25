@@ -400,10 +400,11 @@ mod tests {
         .unwrap()
     }
 
+    fn assert_send_sync<T: Send + Sync>() {}
+
     #[test]
     fn async_client_is_send() {
-        let client = test_client();
-        let _: &dyn Send = &client;
+        assert_send_sync::<Client>();
     }
 
     #[test]

@@ -25,24 +25,28 @@
 //! | id / name          | `IndexEntry::name`                             |
 //! | max_version        | highest non-yanked semver across all entries   |
 //! | max_stable_version | highest non-yanked stable semver               |
-//! | versions (ids)     | sequential 1-based position in the ndjson file |
+//! | versions (ids)     | synthetic 1-based IDs assigned newest-first    |
 //! | description        | not available → `None`                         |
 //! | downloads          | not available → `0`                            |
 //! | created_at/updated_at | not available → current UTC time           |
 //! | links              | synthesised from crate name                    |
 //! | exact_match        | always `true` (queried by exact name)          |
 //!
+//! > **Version ordering**: `CrateResponse.versions` is returned newest-first
+//! > (matching the crates.io web API). Synthetic `Version.id` values start at
+//! > `1` for the newest version and increment toward the oldest.
+//!
 //! ### `Version`
-//! | Target field   | Source                              |
-//! |----------------|-------------------------------------|
-//! | num            | `IndexEntry::vers`                  |
-//! | yanked         | `IndexEntry::yanked`                |
-//! | features       | `IndexEntry::features` + `features2`|
-//! | dl_path        | synthesised standard crates.io path |
-//! | id             | 1-based position in the ndjson file |
-//! | license        | not available → `None`              |
-//! | downloads      | not available → `0`                 |
-//! | created_at/updated_at | not available → epoch        |
+//! | Target field   | Source                                          |
+//! |----------------|-------------------------------------------------|
+//! | num            | `IndexEntry::vers`                              |
+//! | yanked         | `IndexEntry::yanked`                            |
+//! | features       | `IndexEntry::features` + `features2`            |
+//! | dl_path        | synthesised standard crates.io path             |
+//! | id             | synthetic 1-based ID (1 = newest version)       |
+//! | license        | not available → `None`                          |
+//! | downloads      | not available → `0`                             |
+//! | created_at/updated_at | not available → epoch                   |
 //!
 //! ### `Dependency`
 //! | Target field    | Source                                             |
@@ -54,7 +58,8 @@
 //! | default_features| `IndexDep::default_features`                      |
 //! | target          | `IndexDep::target`                                |
 //! | kind            | `IndexDep::kind` (default "normal")               |
-//! | downloads/id/version_id | not available → `0`                     |
+//! | downloads/id    | not available → `0`                               |
+//! | version_id      | parent `Version.id` (same synthetic ID space)     |
 
 use std::collections::HashMap;
 
@@ -531,6 +536,28 @@ mod tests {
         assert_eq!(deps[0].crate_id, "serde");
         assert_eq!(deps[0].req, "^1");
         assert_eq!(deps[0].kind, "normal");
+        // Single entry → newest-first id = 1; version_id must match that.
+        assert_eq!(deps[0].version_id, 1);
+    }
+
+    #[test]
+    fn test_build_deps_map_version_id() {
+        let ndjson = concat!(
+            "{\"name\":\"foo\",\"vers\":\"0.1.0\",\"deps\":[",
+            "{\"name\":\"bar\",\"req\":\"^1\",\"features\":[],\"optional\":false,\"default_features\":true,\"target\":null,\"kind\":\"normal\"}",
+            "],\"cksum\":\"\",\"features\":{},\"yanked\":false}\n",
+            "{\"name\":\"foo\",\"vers\":\"0.2.0\",\"deps\":[",
+            "{\"name\":\"baz\",\"req\":\"^2\",\"features\":[],\"optional\":false,\"default_features\":true,\"target\":null,\"kind\":\"normal\"}",
+            "],\"cksum\":\"\",\"features\":{},\"yanked\":false}\n",
+        );
+        let entries = parse_index_entries(ndjson);
+        let map = build_deps_map(&entries);
+        // 0.1.0 is the oldest entry (index 0) → newest-first id = 2
+        let deps_old = &map["0.1.0"];
+        assert_eq!(deps_old[0].version_id, 2);
+        // 0.2.0 is the newest entry (index 1) → newest-first id = 1
+        let deps_new = &map["0.2.0"];
+        assert_eq!(deps_new[0].version_id, 1);
     }
 
     #[test]

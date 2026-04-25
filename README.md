@@ -77,11 +77,15 @@ web API.  The conversion fills unavailable fields with safe defaults:
 | `id` / `name`       | `IndexEntry::name` (first entry, preserves casing)     |
 | `max_version`       | Highest non-yanked semver across all entries            |
 | `max_stable_version`| Highest non-yanked stable (no pre-release) semver       |
-| `versions` (ids)    | Sequential 1-based position in the ndjson file          |
+| `versions` (ids)    | Synthetic 1-based IDs assigned newest-first (1 = newest)|
 | `description` / `license` / `downloads` | Not in index → `None` / `0`    |
 | `created_at` / `updated_at` | Not in index → current UTC time               |
 | `links`             | Synthesised from crate name                             |
 | `exact_match`       | Always `true` (queried by exact name)                  |
+
+> **Version ordering / IDs**: `CrateResponse.versions` is returned newest-first,
+> matching the crates.io web API. Version `id` values are synthetic and assigned
+> from that order (`1` = newest version, incrementing toward the oldest).
 
 **`Version`**
 
@@ -91,7 +95,7 @@ web API.  The conversion fills unavailable fields with safe defaults:
 | `yanked`            | `IndexEntry::yanked`                                    |
 | `features`          | `IndexEntry::features` merged with `features2` (v2)    |
 | `dl_path`           | Synthesised standard crates.io download path            |
-| `id`                | 1-based position in ndjson                              |
+| `id`                | Synthetic 1-based ID (1 = newest version)               |
 | `license` / `downloads` / timestamps | Not in index → `None` / `0` / epoch  |
 
 **`Dependency`**
@@ -100,7 +104,8 @@ web API.  The conversion fills unavailable fields with safe defaults:
 |---------------------|---------------------------------------------------------|
 | `crate_id`          | `IndexDep::package` if set (renamed dep), else `name`  |
 | `req` / `features` / `optional` / `default_features` / `target` / `kind` | `IndexDep` fields |
-| `downloads` / `id` / `version_id` | Not in index → `0`                      |
+| `downloads` / `id`  | Not in index → `0`                                      |
+| `version_id`        | Parent `Version.id` (same synthetic newest-first ID)   |
 
 > **Renamed dependencies**: when a dependency is declared as
 > `dep_alias = { package = "real_crate" }`, the sparse index sets
