@@ -85,11 +85,33 @@ impl SyncClient {
             .build()
             .expect("failed to build reqwest blocking client");
 
-        Ok(Self {
+        Ok(Self::with_http_client(client, rate_limit))
+    }
+
+    /// Instantiate a new client from a pre-built [`reqwest::blocking::Client`].
+    ///
+    /// This allows full control over the underlying HTTP client, including TLS
+    /// settings.  For example, to accept invalid or self-signed certificates
+    /// (useful in testing or private registries):
+    ///
+    /// ```rust,no_run
+    /// # fn f() -> Result<(), Box<dyn std::error::Error>> {
+    /// let http = reqwest::blocking::Client::builder()
+    ///     .danger_accept_invalid_certs(true)
+    ///     .build()?;
+    /// let client = crates_io_api::SyncClient::with_http_client(
+    ///     http,
+    ///     std::time::Duration::from_millis(1000),
+    /// );
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_http_client(client: HttpClient, rate_limit: std::time::Duration) -> Self {
+        Self {
             client,
             rate_limit,
             last_request_time: std::sync::Mutex::new(None),
-        })
+        }
     }
 
     // ── Internal HTTP helper ─────────────────────────────────────────────────
