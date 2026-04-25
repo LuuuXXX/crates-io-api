@@ -29,12 +29,11 @@ pub struct Client {
 
 // ── CrateStream (mirrors the base implementation) ────────────────────────────
 
-/// An infinite stream of crates matching a [`CratesQuery`].
+/// Stream type returned for a [`CratesQuery`].
 ///
 /// **Note:** Crate enumeration is not available via the sparse registry index.
-/// The first item yielded by this stream will always be
-/// `Err(Error::Api { .. })` ("not supported"), matching the behaviour of
-/// [`Client::crates`].
+/// This stream yields a single `Err(Error::Api { .. })` ("not supported")
+/// and then terminates, matching the behaviour of [`Client::crates`].
 pub struct CrateStream {
     // Fields kept for API compatibility with the base crate.
     #[allow(dead_code)]
@@ -167,6 +166,11 @@ impl Client {
         let request_start = tokio::time::Instant::now();
         let res = self.client.get(url.clone()).send().await?;
 
+        // Record the attempt time regardless of outcome so that even failed
+        // requests are throttled, matching the "at most one request per
+        // rate_limit duration" contract.
+        *lock = Some(request_start);
+
         if !res.status().is_success() {
             return Err(match res.status() {
                 StatusCode::NOT_FOUND => Error::NotFound(NotFoundError {
@@ -180,7 +184,6 @@ impl Client {
             });
         }
 
-        *lock = Some(request_start);
         Ok(res.text().await?)
     }
 
@@ -366,8 +369,9 @@ impl Client {
 
     /// Get a stream over crates matching the given query.
     ///
-    /// **Note:** The stream will always be empty (enumeration not available via
-    /// sparse index).
+    /// **Note:** The stream yields a single `Err(not_supported("crates"))`
+    /// item and then closes, because enumeration is not available via the
+    /// sparse index.
     pub fn crates_stream(&self, filter: CratesQuery) -> CrateStream {
         CrateStream::new(self.clone(), filter)
     }

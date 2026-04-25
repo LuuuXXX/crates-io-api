@@ -296,7 +296,7 @@ pub struct CratesPage {
 pub struct VersionLinks {
     #[deprecated(
         since = "0.7.1",
-        note = "This field was removed from the API and will always be empty. Will be removed in 0.8.0."
+        note = "This field was removed from the API and will always be empty. Will be removed in a future breaking release."
     )]
     #[serde(default)]
     pub authors: String,

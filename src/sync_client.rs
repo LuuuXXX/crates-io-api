@@ -110,6 +110,11 @@ impl SyncClient {
         let request_start = std::time::Instant::now();
         let res = self.client.get(url.clone()).send()?;
 
+        // Record the attempt time regardless of outcome so that even failed
+        // requests are throttled, matching the "at most one request per
+        // rate_limit duration" contract.
+        *lock = Some(request_start);
+
         if !res.status().is_success() {
             return Err(match res.status() {
                 StatusCode::NOT_FOUND => Error::NotFound(NotFoundError {
@@ -123,7 +128,6 @@ impl SyncClient {
             });
         }
 
-        *lock = Some(request_start);
         Ok(res.text()?)
     }
 
