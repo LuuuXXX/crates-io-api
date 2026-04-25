@@ -9,8 +9,8 @@ use std::collections::VecDeque;
 use crate::{
     error::{Error, NotFoundError, PermissionDeniedError},
     index::{
-        build_index_url, empty_crate_downloads, empty_reverse_dependencies, entries_to_crate_response,
-        entries_to_dependencies, not_supported, parse_index_entries,
+        build_deps_map, build_index_url, empty_crate_downloads, empty_reverse_dependencies,
+        entries_to_crate_response, entries_to_dependencies, not_supported, parse_index_entries,
     },
     types::*,
 };
@@ -208,14 +208,11 @@ impl Client {
         version: &str,
     ) -> Result<Vec<Dependency>, Error> {
         let url = build_index_url(crate_name)?;
+        let url_str = url.to_string();
         let body = self.fetch_text(url).await?;
         let entries = parse_index_entries(&body);
         entries_to_dependencies(version, &entries).ok_or_else(|| {
-            Error::NotFound(NotFoundError {
-                url: format!(
-                    "crate '{crate_name}' version '{version}' not found in sparse index"
-                ),
-            })
+            Error::NotFound(NotFoundError { url: url_str })
         })
     }
 
@@ -298,13 +295,18 @@ impl Client {
         } else if all_versions {
             resp.versions.iter().collect()
         } else {
-            resp.versions.last().into_iter().collect()
+            // Versions are newest-first; the first entry is the latest.
+            resp.versions.first().into_iter().collect()
         };
+
+        // Precompute a version → deps map once so that FullVersion assembly is
+        // O(n) instead of O(n²).
+        let deps_map = build_deps_map(&entries);
 
         let full_versions: Vec<FullVersion> = versions_to_process
             .iter()
             .map(|v| {
-                let deps = entries_to_dependencies(&v.num, &entries).unwrap_or_default();
+                let deps = deps_map.get(v.num.as_str()).cloned().unwrap_or_default();
                 #[allow(deprecated)]
                 FullVersion {
                     created_at: v.created_at,
@@ -328,7 +330,8 @@ impl Client {
             })
             .collect();
 
-        let license = full_versions.last().and_then(|v| v.license.clone());
+        // Versions are newest-first, so index 0 is the latest version.
+        let license = full_versions.first().and_then(|v| v.license.clone());
 
         Ok(FullCrate {
             id: data.id.clone(),

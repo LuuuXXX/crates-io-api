@@ -117,19 +117,20 @@ pub(crate) const SPARSE_INDEX_BASE: &str = "https://index.crates.io/";
 /// Compute the sparse-index URL path component for `crate_name`.
 ///
 /// The name is lowercased before computing the path, matching cargo's behaviour.
+/// Prefix segments are computed via char iteration rather than byte slicing so
+/// that crate names containing non-ASCII characters (while currently forbidden
+/// by Cargo) do not cause a panic.
 pub(crate) fn index_path(crate_name: &str) -> String {
     let name = crate_name.to_lowercase();
-    match name.len() {
-        0 => name,
-        1 => format!("1/{name}"),
-        2 => format!("2/{name}"),
-        3 => {
-            let first = &name[..1];
-            format!("3/{first}/{name}")
-        }
-        _ => {
-            let first2 = &name[..2];
-            let next2 = &name[2..4];
+    let mut chars = name.chars();
+    match (chars.next(), chars.next(), chars.next(), chars.next()) {
+        (None, _, _, _) => name,
+        (Some(_), None, _, _) => format!("1/{name}"),
+        (Some(_), Some(_), None, _) => format!("2/{name}"),
+        (Some(first), Some(_), Some(_), None) => format!("3/{first}/{name}"),
+        (Some(first), Some(second), Some(third), Some(fourth)) => {
+            let first2 = format!("{first}{second}");
+            let next2 = format!("{third}{fourth}");
             format!("{first2}/{next2}/{name}")
         }
     }
@@ -220,10 +221,12 @@ pub(crate) fn entries_to_crate_response(
         .map(|(_, s)| s);
 
     // ── Build Version list ────────────────────────────────────────────────────
-    // Versions are assigned sequential 1-based IDs matching their position in
-    // the ndjson file (oldest → newest, ascending order).
+    // crates.io returns versions newest-first, so reverse the sparse-index file
+    // order (oldest → newest) when constructing the response. IDs remain
+    // sequential 1-based values in the returned (newest-first) order.
     let versions: Vec<Version> = entries
         .iter()
+        .rev()
         .enumerate()
         .map(|(i, e)| {
             let id = (i + 1) as u64;
@@ -313,17 +316,47 @@ pub(crate) fn entries_to_crate_response(
 
 /// Convert the [`IndexDep`] entries for the requested `version` into the public
 /// [`Dependency`] type.  Returns `None` when the requested version is not found.
+///
+/// `Dependency::version_id` is set to the synthetic ID of the parent version
+/// (1-based, newest-first ordering used in [`entries_to_crate_response`]).
 pub(crate) fn entries_to_dependencies(
     version: &str,
     entries: &[IndexEntry],
 ) -> Option<Vec<Dependency>> {
+    let n = entries.len();
     entries
         .iter()
-        .find(|e| e.vers == version)
-        .map(|e| index_deps_to_dependencies(&e.deps))
+        .enumerate()
+        .find(|(_, e)| e.vers == version)
+        .map(|(i, e)| {
+            // Newest-first ordering: entry at position i (0=oldest) has id = n - i.
+            let version_id = (n - i) as u64;
+            index_deps_to_dependencies(&e.deps, version_id)
+        })
 }
 
-fn index_deps_to_dependencies(deps: &[IndexDep]) -> Vec<Dependency> {
+/// Build a map from version string → `Vec<Dependency>` for all versions in
+/// `entries`.  This avoids the O(n²) linear-search pattern that arises when
+/// looking up deps for each of N versions individually.
+///
+/// `Dependency::version_id` is populated with the synthetic version ID used
+/// by [`entries_to_crate_response`] (1-based, newest-first).
+pub(crate) fn build_deps_map(
+    entries: &[IndexEntry],
+) -> std::collections::HashMap<String, Vec<Dependency>> {
+    let n = entries.len() as u64;
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            // entries[0] is oldest → id = n; entries[n-1] is newest → id = 1.
+            let version_id = n - i as u64;
+            (e.vers.clone(), index_deps_to_dependencies(&e.deps, version_id))
+        })
+        .collect()
+}
+
+fn index_deps_to_dependencies(deps: &[IndexDep], version_id: u64) -> Vec<Dependency> {
     deps.iter()
         .enumerate()
         .map(|(i, d)| {
@@ -344,7 +377,7 @@ fn index_deps_to_dependencies(deps: &[IndexDep]) -> Vec<Dependency> {
                 optional: d.optional,
                 req: d.req.clone(),
                 target: d.target.clone(),
-                version_id: 0,
+                version_id,
             }
         })
         .collect()
@@ -478,10 +511,11 @@ mod tests {
         );
         let entries = parse_index_entries(ndjson);
         let resp = entries_to_crate_response("foo", &entries);
+        // Versions are returned newest-first; IDs are sequential from 1.
         assert_eq!(resp.versions[0].id, 1);
         assert_eq!(resp.versions[1].id, 2);
-        assert_eq!(resp.versions[0].num, "0.1.0");
-        assert_eq!(resp.versions[1].num, "0.2.0");
+        assert_eq!(resp.versions[0].num, "0.2.0"); // newest first
+        assert_eq!(resp.versions[1].num, "0.1.0");
     }
 
     #[test]

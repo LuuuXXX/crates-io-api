@@ -58,7 +58,7 @@ impl Sort {
     }
 }
 
-/// Options for the [crates]() method of the client.
+/// Options for the `crates` method of the client.
 ///
 /// Used to specify pagination, sorting and a query.
 #[derive(Clone, Debug)]
