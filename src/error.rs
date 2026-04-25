@@ -90,7 +90,7 @@ pub struct NotFoundError {
 
 impl std::fmt::Display for NotFoundError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Resouce at url '{}' could not be found", self.url)
+        write!(f, "Resource at URL '{}' could not be found", self.url)
     }
 }
 

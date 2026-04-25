@@ -4,14 +4,14 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde_derive::*;
 use std::collections::HashMap;
 
-/// Used to specify the sort behaviour of the `Client::crates()` method.
+/// API error response payload returned by the API.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ApiErrors {
     /// Individual errors.
     pub errors: Vec<ApiError>,
 }
 
-/// Used to specify the sort behaviour of the `Client::crates()` method.
+/// An individual API error returned by the API.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ApiError {
     /// Error message.

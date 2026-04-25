@@ -242,12 +242,24 @@ impl SyncClient {
     /// reverse dependencies) are returned as empty / zero.
     ///
     /// The `all_versions` flag controls whether per-version dependency data is
-    /// fetched.  When `false`, only the latest version's dependencies are
-    /// fetched.  Note that each version's dependency data is already contained
-    /// in the single sparse-index fetch, so there is no additional network cost
-    /// regardless of the value of `all_versions`.
+    /// included.  When `false`, only the latest version's dependencies are
+    /// included. The current implementation performs a single sparse-index
+    /// fetch to load all crate and dependency data for the selected versions.
     pub fn full_crate(&self, name: &str, all_versions: bool) -> Result<FullCrate, Error> {
-        let resp = self.get_crate(name)?;
+        // Single fetch: build CrateResponse and dep entries in one round-trip.
+        let url = build_index_url(name)?;
+        let body = self.fetch_text(url)?;
+        let entries = parse_index_entries(&body);
+        if entries.is_empty() {
+            return Err(Error::NotFound(NotFoundError {
+                url: format!(
+                    "{}{}",
+                    crate::index::SPARSE_INDEX_BASE,
+                    crate::index::index_path(name)
+                ),
+            }));
+        }
+        let resp = entries_to_crate_response(name, &entries);
         let data = &resp.crate_data;
 
         let versions_to_process: Vec<&Version> = if resp.versions.is_empty() {
@@ -258,11 +270,6 @@ impl SyncClient {
             // Latest version is the last entry in the ndjson (highest position).
             resp.versions.last().into_iter().collect()
         };
-
-        // Re-fetch the index once to get dep data for all versions.
-        let url = build_index_url(name)?;
-        let body = self.fetch_text(url)?;
-        let entries = parse_index_entries(&body);
 
         let full_versions: Vec<FullVersion> = versions_to_process
             .iter()
@@ -291,7 +298,7 @@ impl SyncClient {
             })
             .collect();
 
-        let license = full_versions.first().and_then(|v| v.license.clone());
+        let license = full_versions.last().and_then(|v| v.license.clone());
 
         Ok(FullCrate {
             id: data.id.clone(),

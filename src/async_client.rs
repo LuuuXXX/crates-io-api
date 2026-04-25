@@ -277,12 +277,21 @@ impl Client {
 
     /// Retrieve all available information for a crate.
     pub async fn full_crate(&self, name: &str, all_versions: bool) -> Result<FullCrate, Error> {
-        let resp = self.get_crate(name).await?;
-        let data = &resp.crate_data;
-
+        // Single fetch: build CrateResponse and dep entries in one round-trip.
         let url = build_index_url(name)?;
         let body = self.fetch_text(url).await?;
         let entries = parse_index_entries(&body);
+        if entries.is_empty() {
+            return Err(Error::NotFound(NotFoundError {
+                url: format!(
+                    "{}{}",
+                    crate::index::SPARSE_INDEX_BASE,
+                    crate::index::index_path(name)
+                ),
+            }));
+        }
+        let resp = entries_to_crate_response(name, &entries);
+        let data = &resp.crate_data;
 
         let versions_to_process: Vec<&Version> = if resp.versions.is_empty() {
             vec![]
@@ -319,7 +328,7 @@ impl Client {
             })
             .collect();
 
-        let license = full_versions.first().and_then(|v| v.license.clone());
+        let license = full_versions.last().and_then(|v| v.license.clone());
 
         Ok(FullCrate {
             id: data.id.clone(),

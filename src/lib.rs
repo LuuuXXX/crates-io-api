@@ -14,7 +14,7 @@
 //! | `crate_downloads`        | ✅                  | ⚠️ empty (unavailable)    |
 //! | `crate_owners`           | ✅                  | ⚠️ empty (unavailable)    |
 //! | `crate_authors`          | ✅                  | ⚠️ empty (unavailable)    |
-//! | `crate_reverse_deps`     | ✅                  | ⚠️ empty (unavailable)    |
+//! | `crate_reverse_dependencies` / `crate_reverse_dependencies_page` / `crate_reverse_dependency_count` | ✅ | ⚠️ empty (unavailable) |
 //! | `full_crate`             | ✅                  | ✅ partial                |
 //! | `summary` / `crates`     | ✅                  | ❌ returns `Error::Api`   |
 //! | `user`                   | ✅                  | ❌ returns `Error::Api`   |
